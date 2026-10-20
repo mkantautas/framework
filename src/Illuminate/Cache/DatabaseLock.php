@@ -4,6 +4,7 @@ namespace Illuminate\Cache;
 
 use Illuminate\Database\Connection;
 use Illuminate\Database\DetectsConcurrencyErrors;
+use Illuminate\Database\MySqlConnection;
 use Illuminate\Database\QueryException;
 use Throwable;
 
@@ -111,11 +112,32 @@ class DatabaseLock extends Lock
     {
         $seconds ??= $this->seconds;
 
-        return $this->connection->table($this->table)
+        $expiration = $this->expiresAt($seconds);
+
+        $updated = $this->connection->table($this->table)
             ->where('key', $this->name)
             ->where('owner', $this->owner)
             ->where('expiration', '>', $this->currentTime())
-            ->update(['expiration' => $this->expiresAt($seconds)]) >= 1;
+            ->update(['expiration' => $expiration]);
+
+        if ($updated >= 1) {
+            return true;
+        }
+
+        // By default, MySQL and MariaDB report changed rows instead of matched rows, so
+        // refreshing a lock to the expiration it already has reports zero rows. Outside
+        // of a transaction, we will check if the lock is still held with that expiration.
+        if (! $this->connection instanceof MySqlConnection || $this->connection->getPdo()->inTransaction()) {
+            return false;
+        }
+
+        return $this->connection->table($this->table)
+            ->useWritePdo()
+            ->where('key', $this->name)
+            ->where('owner', $this->owner)
+            ->where('expiration', $expiration)
+            ->where('expiration', '>', $this->currentTime())
+            ->exists();
     }
 
     /**

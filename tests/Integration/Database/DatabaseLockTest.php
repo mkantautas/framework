@@ -10,6 +10,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Mockery;
+use Orchestra\Testbench\Attributes\RequiresDatabase;
 use Orchestra\Testbench\Attributes\WithMigration;
 use PDOException;
 use PHPUnit\Framework\Attributes\TestWith;
@@ -113,6 +114,55 @@ class DatabaseLockTest extends DatabaseTestCase
         $this->assertFalse(Cache::driver('database')->lock('foo', 10)->get());
 
         $lock->release();
+    }
+
+    public function testLockCanBeRefreshedWithTheSameExpiration()
+    {
+        Carbon::setTestNow(Carbon::now());
+
+        $lock = Cache::driver('database')->lock('foo', 10);
+        $this->assertTrue($lock->get());
+
+        // Refresh the lock within the same second for the same 10 seconds
+        $this->assertTrue($lock->refresh());
+
+        // Lock should still be held
+        $this->assertFalse(Cache::driver('database')->lock('foo', 10)->get());
+
+        $lock->release();
+    }
+
+    public function testLockCannotBeRefreshedByAnotherOwnerWithTheSameExpiration()
+    {
+        Carbon::setTestNow(Carbon::now());
+
+        $firstLock = Cache::driver('database')->lock('foo', 10);
+        $this->assertTrue($firstLock->get());
+
+        $this->assertFalse(Cache::driver('database')->lock('foo', 10, 'other_owner')->refresh());
+
+        $firstLock->release();
+    }
+
+    #[RequiresDatabase('mysql')]
+    public function testLockCannotBeRefreshedFromAStaleSnapshotInsideATransaction()
+    {
+        Carbon::setTestNow(Carbon::now());
+
+        $this->app['config']->set('database.connections.other', $this->app['config']->get('database.connections.mysql'));
+
+        $lock = Cache::driver('database')->lock('foo', 10);
+        $this->assertTrue($lock->get());
+
+        DB::beginTransaction();
+        DB::table('cache_locks')->get();
+
+        // Another process takes over the lock within the same second...
+        DB::connection('other')->table('cache_locks')->where('key', 'foo')->update(['owner' => 'other_owner']);
+
+        $this->assertFalse($lock->refresh());
+
+        DB::rollBack();
     }
 
     public function testLockCannotBeRefreshedByAnotherOwner()
