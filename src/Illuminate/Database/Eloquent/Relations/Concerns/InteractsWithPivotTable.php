@@ -310,19 +310,23 @@ trait InteractsWithPivotTable
      */
     protected function updateExistingPivotUsingCustomClass($id, array $attributes, $touch)
     {
-        $pivot = $this->getCurrentlyAttachedPivotsForIds($id)->first();
+        $updated = 0;
 
-        $updated = $pivot ? $pivot->fill($attributes)->isDirty() : false;
+        foreach ((new BaseCollection($this->parseIds($id)))->uniqueStrict() as $relatedId) {
+            $pivot = $this->getCurrentlyAttachedPivotsForIds([$relatedId])->first();
 
-        if ($updated) {
-            $pivot->save();
+            if ($pivot && $pivot->fill($attributes)->isDirty()) {
+                $pivot->save();
+
+                $updated++;
+            }
         }
 
         if ($touch) {
             $this->touchIfTouching();
         }
 
-        return (int) $updated;
+        return $updated;
     }
 
     /**
